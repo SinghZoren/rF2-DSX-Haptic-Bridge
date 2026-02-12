@@ -33,6 +33,12 @@ public sealed class EffectMixer
         }
         else
         {
+            float maxDelta = Math.Max(
+                Math.Abs(raw.MotorRight - _smoothMotorRight),
+                Math.Abs(raw.MotorLeft - _smoothMotorLeft));
+            if (maxDelta > 0.15f)
+                alpha = Math.Min(alpha + maxDelta * 1.5f, 0.85f);
+
             _smoothMotorRight = alpha * raw.MotorRight + (1f - alpha) * _smoothMotorRight;
             _smoothMotorLeft = alpha * raw.MotorLeft + (1f - alpha) * _smoothMotorLeft;
         }

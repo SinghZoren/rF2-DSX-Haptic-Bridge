@@ -17,37 +17,41 @@ public sealed class AppConfig
     public int MaxStrength { get; set; } = 8;
     public int MaxBrakeStrength { get; set; } = 8;
     public int MaxThrottleStrength { get; set; } = 5;
+    public int FixedThrottleStrength { get; set; } = 2;
     public double SmoothingAlpha { get; set; } = 0.25;
 
     public double AbsGripThreshold { get; set; } = 0.85;
     public double AbsTriggerGain { get; set; } = 1.0;
     public int AbsTriggerFreqHz { get; set; } = 40;
 
-    public double TcGripThreshold { get; set; } = 0.80;
+    public double TcGripThreshold { get; set; } = 0.60;
     public double TcTriggerGain { get; set; } = 1.0;
     public int TcTriggerFreqHz { get; set; } = 30;
 
     public double ImpactTriggerGain { get; set; } = 0.5;
 
-    public double OversteerThresholdDeg { get; set; } = 5.0;
+    public double OversteerThresholdDeg { get; set; } = 10.0;
     public double OversteerTriggerGain { get; set; } = 0.8;
     public double EstimatedWheelbaseMeter { get; set; } = 2.6;
     public double EstimatedMaxSteerAngleDeg { get; set; } = 20.0;
 
     public float MasterRumbleGain { get; set; } = 1.0f;
     public float RoadRumbleGain { get; set; } = 0.5f;
+    public float GForceRumbleGain { get; set; } = 0.7f;
     public float CurbRumbleGain { get; set; } = 1.0f;
     public float AbsRumbleGain { get; set; } = 0.8f;
-    public float TcRumbleGain { get; set; } = 0.6f;
+    public float TcRumbleGain { get; set; } = 0.3f;
     public float EngineRumbleGain { get; set; } = 0.3f;
     public float ImpactRumbleGain { get; set; } = 1.0f;
-    public float SpinRumbleGain { get; set; } = 0.8f;
+    public float SpinRumbleGain { get; set; } = 0.4f;
 
     public double CurbSuspVelocityThreshold { get; set; } = 0.15;
     public double CurbRumbleScale { get; set; } = 3.0;
+    public double CurbTriggerGain { get; set; } = 0.8;
+    public int CurbTriggerFreqHz { get; set; } = 45;
 
-    public double RumbleSmoothingAlpha { get; set; } = 0.35;
-    public double RumbleNoiseGate { get; set; } = 0.03;
+    public double RumbleSmoothingAlpha { get; set; } = 0.5;
+    public double RumbleNoiseGate { get; set; } = 0.05;
 
     public static AppConfig Load(string path)
     {

@@ -31,7 +31,7 @@ public sealed class TelemetryReader : IDisposable
         try
         {
             _mmf = MemoryMappedFile.OpenExisting(Rf2Constants.MM_TELEMETRY_FILE_NAME);
-            _stream = _mmf.CreateViewStream(0, _structSize, MemoryMappedFileAccess.Read);
+            _stream = _mmf.CreateViewStream(0, 0, MemoryMappedFileAccess.Read);
             _rawBuffer = new byte[_structSize];
             _connected = true;
             return true;

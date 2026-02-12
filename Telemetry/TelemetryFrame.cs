@@ -82,7 +82,8 @@ public readonly struct TelemetryFrame
         double engineRpm, double engineMaxRpm, int gear,
         double lastImpactET, double lastImpactMag, bool impactThisTick,
         WheelFrame fl, WheelFrame fr, WheelFrame rl, WheelFrame rr,
-        double oversteerAngle)
+        double oversteerAngle,
+        double estFrontGrip, double estRearGrip)
     {
         DeltaTime = deltaTime;
         ElapsedTime = elapsedTime;
@@ -106,8 +107,8 @@ public readonly struct TelemetryFrame
         WheelFR = fr;
         WheelRL = rl;
         WheelRR = rr;
-        AvgFrontGrip = (fl.GripFraction + fr.GripFraction) * 0.5;
-        AvgRearGrip = (rl.GripFraction + rr.GripFraction) * 0.5;
+        AvgFrontGrip = estFrontGrip;
+        AvgRearGrip = estRearGrip;
         AvgFrontSlipRatio = (Math.Abs(fl.SlipRatio) + Math.Abs(fr.SlipRatio)) * 0.5;
         AvgRearSlipRatio = (Math.Abs(rl.SlipRatio) + Math.Abs(rr.SlipRatio)) * 0.5;
         MaxSuspVelocity = Math.Max(Math.Max(Math.Abs(fl.SuspensionVelocity), Math.Abs(fr.SuspensionVelocity)),
@@ -196,6 +197,28 @@ public sealed class TelemetryFrameBuilder
             }
         }
 
+        double estFrontGrip, estRearGrip;
+        double rawGripSum = veh.mWheels[0].mGripFract + veh.mWheels[1].mGripFract
+                          + veh.mWheels[2].mGripFract + veh.mWheels[3].mGripFract;
+
+        if (rawGripSum > 0.01)
+        {
+            estFrontGrip = (veh.mWheels[0].mGripFract + veh.mWheels[1].mGripFract) * 0.5;
+            estRearGrip = (veh.mWheels[2].mGripFract + veh.mWheels[3].mGripFract) * 0.5;
+        }
+        else if (veh.mWheels[0].mTireLoad > 100 && veh.mWheels[2].mTireLoad > 100)
+        {
+            estFrontGrip = EstimateAxleGrip(veh.mWheels[0], veh.mWheels[1]);
+            estRearGrip = EstimateAxleGrip(veh.mWheels[2], veh.mWheels[3]);
+        }
+        else
+        {
+            double totalAccel = Math.Sqrt(latAccel * latAccel + longAccel * longAccel);
+            double gripUsed = Math.Clamp(totalAccel / 25.0, 0, 1);
+            estFrontGrip = brake > 0.1 ? Math.Min(gripUsed * 1.2, 1.0) : gripUsed * 0.8;
+            estRearGrip = throttle > 0.3 ? Math.Min(gripUsed * 1.2, 1.0) : gripUsed * 0.8;
+        }
+
         _initialized = true;
 
         return new TelemetryFrame(dt, veh.mElapsedTime,
@@ -206,7 +229,22 @@ public sealed class TelemetryFrameBuilder
             veh.mEngineRPM, veh.mEngineMaxRPM, veh.mGear,
             veh.mLastImpactET, veh.mLastImpactMagnitude, impactThisTick,
             wheels[0], wheels[1], wheels[2], wheels[3],
-            oversteerAngle);
+            oversteerAngle, estFrontGrip, estRearGrip);
+    }
+
+    private static double EstimateAxleGrip(in rF2Wheel w1, in rF2Wheel w2)
+    {
+        double g1 = EstimateWheelGrip(w1);
+        double g2 = EstimateWheelGrip(w2);
+        return (g1 + g2) * 0.5;
+    }
+
+    private static double EstimateWheelGrip(in rF2Wheel w)
+    {
+        if (w.mTireLoad < 100) return 0;
+        double combined = Math.Sqrt(w.mLateralForce * w.mLateralForce
+                                  + w.mLongitudinalForce * w.mLongitudinalForce);
+        return Math.Clamp(combined / (w.mTireLoad * 1.5), 0, 1);
     }
 
     public void Reset()

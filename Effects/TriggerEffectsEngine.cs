@@ -8,6 +8,17 @@ public sealed class TriggerEffectsEngine
     private readonly AppConfig _config;
     private double _impactDecay;
 
+    private double _smoothThrottle;
+    private double _smoothBrake;
+    private bool _pedalInit;
+
+    private double _curbTriggerDecay;
+
+    private int _prevGear;
+    private double _gearShiftTriggerDecay;
+
+    private double _peakDecel;
+
     public TriggerEffect LeftTrigger { get; private set; }
     public TriggerEffect RightTrigger { get; private set; }
 
@@ -18,10 +29,37 @@ public sealed class TriggerEffectsEngine
 
     public void Update(in TelemetryFrame frame)
     {
+        const double pedalAlpha = 0.15;
+        if (!_pedalInit)
+        {
+            _smoothThrottle = frame.ThrottlePedal;
+            _smoothBrake = frame.BrakePedal;
+            _pedalInit = true;
+        }
+        else
+        {
+            _smoothThrottle = pedalAlpha * frame.ThrottlePedal + (1.0 - pedalAlpha) * _smoothThrottle;
+            _smoothBrake = pedalAlpha * frame.BrakePedal + (1.0 - pedalAlpha) * _smoothBrake;
+        }
+
         if (frame.ImpactThisTick)
             _impactDecay = Math.Clamp(frame.LastImpactMagnitude * _config.ImpactTriggerGain / 50.0, 0.3, 1.0);
         else
             _impactDecay = Math.Max(0, _impactDecay - frame.DeltaTime * 5.0);
+
+        if (frame.Gear != _prevGear && _prevGear != 0 && frame.Gear > 0)
+            _gearShiftTriggerDecay = 0.6;
+        _prevGear = frame.Gear;
+        if (_gearShiftTriggerDecay > 0)
+            _gearShiftTriggerDecay = Math.Max(0, _gearShiftTriggerDecay - frame.DeltaTime * 7.0);
+
+        if (frame.MaxSuspVelocity > 0.6 && !frame.IsStationary)
+        {
+            double intensity = Math.Clamp(frame.MaxSuspVelocity * 1.5, 0.3, 1.0);
+            _curbTriggerDecay = Math.Max(_curbTriggerDecay, intensity);
+        }
+        if (_curbTriggerDecay > 0)
+            _curbTriggerDecay = Math.Max(0, _curbTriggerDecay - frame.DeltaTime * 8.0);
 
         LeftTrigger = ComputeBrakeTrigger(in frame);
         RightTrigger = ComputeThrottleTrigger(in frame);
@@ -29,30 +67,38 @@ public sealed class TriggerEffectsEngine
 
     private TriggerEffect ComputeBrakeTrigger(in TelemetryFrame frame)
     {
-        if (frame.BrakePedal < _config.BrakeDeadzone)
+        if (_smoothBrake < _config.BrakeDeadzone)
+        {
+            _peakDecel = 0;
             return TriggerEffect.Off();
-
-        if (_impactDecay > 0.2)
-        {
-            int amp = Math.Clamp((int)(8 * _impactDecay), 1, 8);
-            return TriggerEffect.Vibrate(_config.BrakeStartPos, amp, 60);
         }
 
-        bool absActive = frame.BrakePedal > 0.15 && frame.AvgFrontGrip < _config.AbsGripThreshold && !frame.IsStationary;
-        if (absActive)
+        double decel = Math.Abs(frame.LongitudinalAccel);
+
+        if (_smoothBrake > 0.3 && frame.SpeedMps > 5.0)
         {
-            double severity = Math.Clamp((1.0 - frame.AvgFrontGrip) / (1.0 - _config.AbsGripThreshold), 0, 1);
-            int amp = Math.Clamp((int)(8 * severity * _config.AbsTriggerGain), 1, 8);
-            return TriggerEffect.Vibrate(_config.BrakeStartPos, amp, (byte)Math.Clamp(_config.AbsTriggerFreqHz, 10, 120));
+            if (decel > _peakDecel)
+                _peakDecel = decel;
+            else
+                _peakDecel = Math.Max(decel, _peakDecel - frame.DeltaTime * 4.0);
+
+            if (_smoothBrake > 0.5 && _peakDecel > 6.0 && decel < _peakDecel * 0.55)
+            {
+                return TriggerEffect.Resistance(_config.BrakeStartPos, 1);
+            }
+        }
+        else
+        {
+            _peakDecel = 0;
         }
 
-        int strength = Math.Clamp((int)Math.Round(frame.BrakePedal * _config.MaxBrakeStrength), 1, 8);
+        int strength = Math.Clamp((int)Math.Round(_smoothBrake * _config.MaxBrakeStrength), 1, 8);
         return TriggerEffect.Resistance(_config.BrakeStartPos, strength);
     }
 
     private TriggerEffect ComputeThrottleTrigger(in TelemetryFrame frame)
     {
-        if (frame.ThrottlePedal < _config.ThrottleDeadzone)
+        if (_smoothThrottle < _config.ThrottleDeadzone)
             return TriggerEffect.Off();
 
         if (_impactDecay > 0.2)
@@ -61,23 +107,19 @@ public sealed class TriggerEffectsEngine
             return TriggerEffect.Vibrate(_config.ThrottleStartPos, amp, 50);
         }
 
-        bool tcActive = frame.ThrottlePedal > 0.2 && frame.AvgRearGrip < _config.TcGripThreshold && !frame.IsStationary;
-        if (tcActive)
+        if (_gearShiftTriggerDecay > 0.1)
         {
-            double severity = Math.Clamp((1.0 - frame.AvgRearGrip) / (1.0 - _config.TcGripThreshold), 0, 1);
-            int amp = Math.Clamp((int)(8 * severity * _config.TcTriggerGain), 1, 8);
-            return TriggerEffect.Vibrate(_config.ThrottleStartPos, amp, (byte)Math.Clamp(_config.TcTriggerFreqHz, 10, 120));
+            int amp = Math.Clamp((int)(4 * _gearShiftTriggerDecay), 1, 5);
+            return TriggerEffect.Vibrate(_config.ThrottleStartPos, amp, 35);
         }
 
-        if (frame.OversteerAngle > _config.OversteerThresholdDeg && !frame.IsStationary)
+        if (_curbTriggerDecay > 0.15)
         {
-            double severity = Math.Clamp((frame.OversteerAngle - _config.OversteerThresholdDeg) / 20.0, 0, 1);
-            int amp = Math.Clamp((int)(6 * severity * _config.OversteerTriggerGain), 1, 8);
-            return TriggerEffect.Vibrate(_config.ThrottleStartPos, amp, 25);
+            int amp = Math.Clamp((int)(5 * _curbTriggerDecay * _config.CurbTriggerGain), 1, 8);
+            return TriggerEffect.Vibrate(_config.ThrottleStartPos, amp, (byte)_config.CurbTriggerFreqHz);
         }
 
-        int strength = Math.Clamp((int)Math.Round(frame.ThrottlePedal * _config.MaxThrottleStrength), 1, 8);
-        return TriggerEffect.Resistance(_config.ThrottleStartPos, strength);
+        return TriggerEffect.Resistance(_config.ThrottleStartPos, _config.FixedThrottleStrength);
     }
 
     public void Reset()
@@ -85,5 +127,12 @@ public sealed class TriggerEffectsEngine
         LeftTrigger = TriggerEffect.Off();
         RightTrigger = TriggerEffect.Off();
         _impactDecay = 0;
+        _smoothThrottle = 0;
+        _smoothBrake = 0;
+        _pedalInit = false;
+        _curbTriggerDecay = 0;
+        _prevGear = 0;
+        _gearShiftTriggerDecay = 0;
+        _peakDecel = 0;
     }
 }

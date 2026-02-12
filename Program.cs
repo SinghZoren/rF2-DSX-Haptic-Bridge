@@ -119,11 +119,15 @@ internal static class Program
                             : rightTrigger.Mode == TriggerMode.Feedback
                                 ? $"Res({rightTrigger.Strength})"
                                 : "Off";
-                        Console.Write($"\rL2:{l2,-18} R2:{r2,-18} " +
-                                      $"Rum:{rumble.MotorRightByte:D3}/{rumble.MotorLeftByte:D3} " +
-                                      $"{frame.SpeedKph:F0}kph G{frame.Gear} " +
-                                      $"Grip:{frame.AvgFrontGrip:F2}/{frame.AvgRearGrip:F2} " +
-                                      $"Yaw:{frame.OversteerAngle:F1}d   ");
+                        double avgFrontAng = (Math.Abs(frame.WheelFL.AngularVelocity)
+                                            + Math.Abs(frame.WheelFR.AngularVelocity)) * 0.5;
+                        Console.Write($"\r{frame.SpeedKph,3:F0}kph G{frame.Gear} " +
+                                      $"L2:{l2,-10} R2:{r2,-10} " +
+                                      $"R:{rumble.MotorRightByte:D3}/{rumble.MotorLeftByte:D3} " +
+                                      $"Gr:{frame.AvgFrontGrip:F2}/{frame.AvgRearGrip:F2} " +
+                                      $"Sl:{frame.AvgFrontSlipRatio:F1} " +
+                                      $"Ang:{avgFrontAng:F0} " +
+                                      $"Gf:{frame.LateralAccel:F1}/{frame.LongitudinalAccel:F1}   ");
                     }
                 }
                 else

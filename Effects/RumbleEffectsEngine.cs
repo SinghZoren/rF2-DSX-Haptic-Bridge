@@ -10,11 +10,14 @@ public sealed class RumbleEffectsEngine
     private double _impactDecay;
     private int _absPhase;
     private int _tcPhase;
+    private int _prevGear;
+    private double _gearShiftDecay;
 
     private double _suspAvgSlow;
     private bool _suspAvgInit;
     private double _curbDecay;
     private float _curbSideBiasLeft;
+    private int _curbPulsePhase;
 
     public RumbleEffect Output { get; private set; }
 
@@ -31,6 +34,7 @@ public sealed class RumbleEffectsEngine
         bool curbActive = _curbDecay > 0.05;
 
         var road = ComputeRoadSurface(in frame, curbActive);
+        var gforce = ComputeGForce(in frame);
         var abs = ComputeAbs(in frame);
         var tc = ComputeTc(in frame);
         var engine = ComputeEngine(in frame);
@@ -39,6 +43,7 @@ public sealed class RumbleEffectsEngine
 
         var combined = road * _config.RoadRumbleGain
                      + curb * _config.CurbRumbleGain
+                     + gforce * _config.GForceRumbleGain
                      + abs * _config.AbsRumbleGain
                      + tc * _config.TcRumbleGain
                      + engine * _config.EngineRumbleGain
@@ -66,7 +71,7 @@ public sealed class RumbleEffectsEngine
         }
         else
         {
-            const double alpha = 0.005;
+            const double alpha = 0.015;
             _suspAvgSlow = _suspAvgSlow * (1.0 - alpha) + avgSusp * alpha;
         }
     }
@@ -75,61 +80,103 @@ public sealed class RumbleEffectsEngine
     {
         if (frame.IsStationary) return RumbleEffect.None;
 
-        float speedFactor = (float)Math.Clamp((frame.SpeedKph - 20.0) / 60.0, 0, 1);
+        float speedFactor = (float)Math.Clamp((frame.SpeedKph - 30.0) / 80.0, 0, 1);
 
-        double avgSusp = (Math.Abs(frame.WheelFL.SuspensionVelocity)
-                        + Math.Abs(frame.WheelFR.SuspensionVelocity)
-                        + Math.Abs(frame.WheelRL.SuspensionVelocity)
-                        + Math.Abs(frame.WheelRR.SuspensionVelocity)) / 4.0;
+        double fl = Math.Abs(frame.WheelFL.SuspensionVelocity);
+        double fr = Math.Abs(frame.WheelFR.SuspensionVelocity);
+        double rl = Math.Abs(frame.WheelRL.SuspensionVelocity);
+        double rr = Math.Abs(frame.WheelRR.SuspensionVelocity);
+        double avg = (fl + fr + rl + rr) * 0.25;
+        double variance = ((fl - avg) * (fl - avg) + (fr - avg) * (fr - avg)
+                         + (rl - avg) * (rl - avg) + (rr - avg) * (rr - avg)) * 0.25;
 
-        float intensity = (float)Math.Clamp(avgSusp * 0.15, 0, 0.3) * speedFactor;
+        float intensity = (float)Math.Clamp(avg * 0.08 + Math.Sqrt(variance) * 0.4, 0, 0.3) * speedFactor;
 
-        float roadSuppression = curbActive ? 0.2f : 1.0f;
+        float roadSuppression = curbActive ? 0.1f : 1.0f;
         intensity *= roadSuppression;
 
         return new RumbleEffect
         {
             MotorRight = intensity,
-            MotorLeft = intensity * 0.1f
+            MotorLeft = intensity * 0.15f
+        };
+    }
+
+    private RumbleEffect ComputeGForce(in TelemetryFrame frame)
+    {
+        if (frame.IsStationary) return RumbleEffect.None;
+
+        float speedFactor = (float)Math.Clamp((frame.SpeedKph - 20.0) / 40.0, 0, 1);
+
+        float longG = (float)Math.Abs(frame.LongitudinalAccel);
+        float longIntensity = (float)Math.Clamp((longG - 1.5) / 12.0, 0, 0.5) * speedFactor;
+
+        float latG = (float)Math.Abs(frame.LateralAccel);
+        float latIntensity = (float)Math.Clamp((latG - 3.0) / 20.0, 0, 0.5) * speedFactor;
+
+        float motorRight = longIntensity;
+        float motorLeft = longIntensity;
+
+        if (latIntensity > 0.01f)
+        {
+            motorRight += frame.LateralAccel < 0 ? latIntensity * 0.8f : latIntensity * 0.3f;
+            motorLeft += frame.LateralAccel > 0 ? latIntensity * 0.8f : latIntensity * 0.3f;
+        }
+
+        motorRight = Math.Min(motorRight, 0.7f);
+        motorLeft = Math.Min(motorLeft, 0.7f);
+
+        if (motorRight < 0.02f && motorLeft < 0.02f) return RumbleEffect.None;
+
+        return new RumbleEffect
+        {
+            MotorRight = motorRight,
+            MotorLeft = motorLeft
         };
     }
 
     private RumbleEffect ComputeCurb(in TelemetryFrame frame)
     {
-        if (frame.IsStationary) { _curbDecay = 0; return RumbleEffect.None; }
+        if (frame.IsStationary) { _curbDecay = 0; _curbPulsePhase = 0; return RumbleEffect.None; }
 
         double maxSuspVel = frame.MaxSuspVelocity;
         double baseline = Math.Max(_suspAvgSlow, 0.01);
-
         double spikeRatio = maxSuspVel / baseline;
 
-        if (spikeRatio > 2.5 && maxSuspVel > _config.CurbSuspVelocityThreshold)
+        double threshold = _curbDecay > 0.1
+            ? _config.CurbSuspVelocityThreshold * 0.6
+            : _config.CurbSuspVelocityThreshold;
+        double requiredRatio = _curbDecay > 0.1 ? 1.8 : 2.5;
+
+        if (spikeRatio > requiredRatio && maxSuspVel > threshold)
         {
             double hitIntensity = Math.Clamp(
-                (maxSuspVel - _config.CurbSuspVelocityThreshold) * _config.CurbRumbleScale, 0.4, 1.0);
+                (maxSuspVel - threshold) * _config.CurbRumbleScale, 0.5, 1.0);
             _curbDecay = Math.Max(_curbDecay, hitIntensity);
-
             _curbSideBiasLeft = frame.MaxLeftSuspVelocity > frame.MaxRightSuspVelocity ? 1.0f : 0.3f;
         }
 
         if (_curbDecay > 0)
-            _curbDecay = Math.Max(0, _curbDecay - frame.DeltaTime * 6.5);
+            _curbDecay = Math.Max(0, _curbDecay - frame.DeltaTime * 4.5);
 
-        if (_curbDecay <= 0.02) return RumbleEffect.None;
+        if (_curbDecay <= 0.02) { _curbPulsePhase = 0; return RumbleEffect.None; }
 
-        float intensity = (float)_curbDecay;
-        float rightBias = _curbSideBiasLeft < 0.5f ? 1.0f : 0.3f;
+        _curbPulsePhase++;
+        float pulseMultiplier = (_curbPulsePhase % 4 < 3) ? 1.0f : 0.2f;
+
+        float intensity = (float)_curbDecay * pulseMultiplier;
+        float rightBias = _curbSideBiasLeft < 0.5f ? 1.0f : 0.5f;
 
         return new RumbleEffect
         {
-            MotorRight = intensity * 0.3f * rightBias,
+            MotorRight = intensity * rightBias,
             MotorLeft = intensity * _curbSideBiasLeft
         };
     }
 
     private RumbleEffect ComputeAbs(in TelemetryFrame frame)
     {
-        bool absActive = frame.BrakePedal > 0.15 && frame.AvgFrontGrip < _config.AbsGripThreshold && !frame.IsStationary;
+        bool absActive = frame.BrakePedal > 0.15 && frame.AvgFrontGrip > 0.01 && frame.AvgFrontGrip < _config.AbsGripThreshold && !frame.IsStationary;
         if (!absActive) { _absPhase = 0; return RumbleEffect.None; }
 
         _absPhase++;
@@ -146,7 +193,7 @@ public sealed class RumbleEffectsEngine
 
     private RumbleEffect ComputeTc(in TelemetryFrame frame)
     {
-        bool tcActive = frame.ThrottlePedal > 0.2 && frame.AvgRearGrip < _config.TcGripThreshold && !frame.IsStationary;
+        bool tcActive = frame.ThrottlePedal > 0.5 && frame.AvgRearGrip > 0.01 && frame.AvgRearGrip < _config.TcGripThreshold && !frame.IsStationary;
         if (!tcActive) { _tcPhase = 0; return RumbleEffect.None; }
 
         _tcPhase++;
@@ -163,15 +210,20 @@ public sealed class RumbleEffectsEngine
 
     private RumbleEffect ComputeEngine(in TelemetryFrame frame)
     {
-        if (frame.EngineRpm < 500) return RumbleEffect.None;
+        if (frame.Gear != _prevGear && _prevGear != 0 && frame.Gear > 0)
+            _gearShiftDecay = 0.7;
+        _prevGear = frame.Gear;
 
-        float normalized = (float)frame.EngineRpmNormalized;
-        float intensity = normalized * normalized;
+        if (_gearShiftDecay > 0)
+            _gearShiftDecay = Math.Max(0, _gearShiftDecay - frame.DeltaTime * 6.0);
 
+        if (_gearShiftDecay <= 0) return RumbleEffect.None;
+
+        float intensity = (float)_gearShiftDecay;
         return new RumbleEffect
         {
-            MotorRight = intensity * 0.08f,
-            MotorLeft = intensity * 0.2f
+            MotorRight = intensity * 0.4f,
+            MotorLeft = intensity * 0.3f
         };
     }
 
@@ -219,7 +271,10 @@ public sealed class RumbleEffectsEngine
         _impactDecay = 0;
         _absPhase = 0;
         _tcPhase = 0;
+        _prevGear = 0;
+        _gearShiftDecay = 0;
         _curbDecay = 0;
+        _curbPulsePhase = 0;
         _suspAvgSlow = 0;
         _suspAvgInit = false;
         _curbSideBiasLeft = 0;
